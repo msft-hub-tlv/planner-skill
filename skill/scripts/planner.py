@@ -24,6 +24,23 @@ from dataverse import (  # noqa: E402
     parse_plan_url,
     split_fields,
 )
+from graph import (  # noqa: E402
+    GraphClient,
+    acquire_graph_token,
+    parse_plan_url as parse_any_plan_url,
+)
+
+
+def _is_basic_plan(url_or_id: str) -> bool:
+    try:
+        kind, _, _ = parse_any_plan_url(url_or_id)
+        return kind == "basic"
+    except Exception:
+        return False
+
+
+def _graph(tenant: Optional[str]) -> GraphClient:
+    return GraphClient(acquire_graph_token(tenant or "common"))
 
 # Dataverse plugin block string emitted by Project for the Web for direct writes.
 PLUGIN_BLOCK_MARKERS = (
@@ -313,6 +330,34 @@ def cmd_complete(args: argparse.Namespace) -> int:
 def cmd_create(args: argparse.Namespace) -> int:
     via = getattr(args, "via", "auto")
 
+    # Basic Planner plans → Microsoft Graph (no Dataverse, no browser)
+    if _is_basic_plan(args.plan):
+        kind, plan_id, tid = parse_any_plan_url(args.plan)
+        gc = _graph(tid or args.tenant)
+        bucket_id = args.bucket
+        if not bucket_id and args.bucket_name:
+            buckets = gc.list_buckets(plan_id)
+            match = next((b for b in buckets if b["name"] == args.bucket_name), None)
+            if not match:
+                match = gc.create_bucket(plan_id, args.bucket_name)
+            bucket_id = match["id"]
+        applied = None
+        tags = [t.strip() for t in (args.tags or "").split(",") if t.strip()]
+        if tags:
+            label_map = gc.ensure_label_map(plan_id, tags)
+            applied = {label_map[t]: True for t in tags if t in label_map}
+        task = gc.create_task(plan_id, args.name,
+                              bucket_id=bucket_id, applied_categories=applied)
+        if args.description:
+            gc.set_task_description(task["id"], args.description)
+        print(json.dumps({"ok": True, "id": task["id"], "title": task["title"],
+                          "via": "graph", "labels": tags or None}, indent=2))
+        return 0
+
+    # Description and tags can only be set through the browser path on Premium.
+    if via == "auto" and (args.description or args.tags):
+        via = "browser"
+
     if via in ("auto", "api"):
         try:
             env_url, plan_id, _ = _resolve_plan(args.plan, args.tenant)
@@ -333,13 +378,99 @@ def cmd_create(args: argparse.Namespace) -> int:
 
     from browser import BrowserPlanner
 
+    tags = [t.strip() for t in (args.tags or "").split(",") if t.strip()] or None
+
     async def _run():
         async with BrowserPlanner(headless=not args.show_browser) as bp:
-            return await bp.create_task(args.plan, args.name, bucket_name=args.bucket_name)
+            return await bp.create_task(
+                args.plan, args.name,
+                bucket_name=args.bucket_name,
+                description=args.description,
+                labels=tags,
+            )
 
     out = _run_browser(_run)
     print(json.dumps({**out, "via": "browser"}, indent=2))
     return 0
+
+
+def cmd_bulk_create(args: argparse.Namespace) -> int:
+    import csv
+
+    items = []
+    with open(args.csv, newline="", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            name = (row.get("Task Name") or row.get("name") or "").strip()
+            if not name:
+                continue
+            tags_raw = row.get("Tags") or row.get("tags") or ""
+            items.append({
+                "name": name,
+                "bucket_name": (row.get("Bucket") or row.get("bucket") or "").strip() or None,
+                "description": (row.get("Description") or row.get("description") or "").strip() or None,
+                "labels": [t.strip() for t in tags_raw.split(",") if t.strip()] or None,
+            })
+
+    print(f"Bulk-creating {len(items)} tasks from {args.csv}…", file=sys.stderr)
+
+    # Basic Planner plans → Graph (fast, native description + labels)
+    if _is_basic_plan(args.plan):
+        kind, plan_id, tid = parse_any_plan_url(args.plan)
+        gc = _graph(tid or args.tenant)
+
+        # Ensure all referenced buckets exist
+        existing_buckets = {b["name"]: b["id"] for b in gc.list_buckets(plan_id)}
+        for it in items:
+            bn = it.get("bucket_name")
+            if bn and bn not in existing_buckets:
+                created = gc.create_bucket(plan_id, bn)
+                existing_buckets[bn] = created["id"]
+                print(f"  + bucket {bn!r}", file=sys.stderr)
+
+        # Define all labels in one round-trip
+        all_labels = sorted({lab for it in items for lab in (it.get("labels") or [])})
+        label_map = gc.ensure_label_map(plan_id, all_labels) if all_labels else {}
+        if label_map:
+            print(f"  labels: {len(label_map)} mapped", file=sys.stderr)
+
+        results = []
+        for i, it in enumerate(items, 1):
+            try:
+                applied = None
+                if it.get("labels"):
+                    applied = {label_map[t]: True for t in it["labels"] if t in label_map}
+                task = gc.create_task(
+                    plan_id, it["name"],
+                    bucket_id=existing_buckets.get(it.get("bucket_name") or ""),
+                    applied_categories=applied,
+                )
+                if it.get("description"):
+                    gc.set_task_description(task["id"], it["description"])
+                results.append({"ok": True, "id": task["id"], "title": task["title"]})
+                print(f"  [{i}/{len(items)}] ✓ {it['name']}", file=sys.stderr)
+            except Exception as e:
+                results.append({"ok": False, "name": it["name"], "error": str(e)})
+                print(f"  [{i}/{len(items)}] ✗ {it['name']}: {e}", file=sys.stderr)
+
+        ok = sum(1 for r in results if r.get("ok"))
+        print(json.dumps({"total": len(results), "ok": ok,
+                          "failed": len(results) - ok, "via": "graph",
+                          "results": results}, indent=2))
+        return 0 if ok == len(results) else 1
+
+    # Premium plans → browser fallback
+    from browser import BrowserPlanner
+
+    async def _run():
+        async with BrowserPlanner(headless=not args.show_browser) as bp:
+            return await bp.bulk_create(args.plan, items)
+
+    results = _run_browser(_run)
+    ok = sum(1 for r in results if r.get("ok"))
+    print(json.dumps({"total": len(results), "ok": ok, "failed": len(results) - ok,
+                      "via": "browser", "results": results}, indent=2))
+    return 0 if ok == len(results) else 1
 
 
 def cmd_browser_login(args: argparse.Namespace) -> int:
@@ -423,9 +554,18 @@ def main(argv: Optional[list[str]] = None) -> int:
     cr.add_argument("--bucket", help="bucket id (Dataverse path)")
     cr.add_argument("--bucket-name", help="bucket display name (browser path)")
     cr.add_argument("--name", required=True)
+    cr.add_argument("--description", help="task notes (browser path)")
+    cr.add_argument("--tags", help="comma-separated labels (browser path)")
     cr.add_argument("--via", choices=["auto", "api", "browser"], default="auto")
     cr.add_argument("--show-browser", action="store_true")
     cr.set_defaults(func=cmd_create)
+
+    bc = sub.add_parser("bulk-create",
+                        help="create many tasks from a CSV (browser path only)")
+    bc.add_argument("--plan", required=True, help="plan URL or plan-id")
+    bc.add_argument("--csv", required=True, help="CSV with columns: Bucket, Task Name, Description, Tags")
+    bc.add_argument("--show-browser", action="store_true")
+    bc.set_defaults(func=cmd_bulk_create)
 
     bl = sub.add_parser("browser-login", help="open Edge once to seed the persistent SSO profile")
     bl.set_defaults(func=cmd_browser_login)

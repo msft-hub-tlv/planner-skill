@@ -142,8 +142,12 @@ class BrowserPlanner:
         plan_url: str,
         name: str,
         bucket_name: Optional[str] = None,
+        description: Optional[str] = None,
+        labels: Optional[list] = None,
+        _page=None,
     ) -> dict:
-        page = await self._open_plan(plan_url)
+        own_page = _page is None
+        page = _page or await self._open_plan(plan_url)
         try:
             # Switch to Grid view if we landed on Board — Grid is most reliable
             try:
@@ -162,25 +166,24 @@ class BrowserPlanner:
                     add_btn = loc.first
                     break
             if add_btn is None:
-                # Fallback: an input row at the bottom of the grid
                 inp = page.get_by_role("textbox", name="Add new task", exact=False)
                 if await inp.count() > 0:
                     await inp.first.click()
                     await inp.first.fill(name)
                     await page.keyboard.press("Enter")
                     await page.wait_for_timeout(1500)
-                    return {"ok": True, "name": name, "via": "inline"}
-                shot = await _shot_async(page, "no-add-button")
-                raise RuntimeError(f"Could not find an Add-task control. Screenshot: {shot}")
+                else:
+                    shot = await _shot_async(page, "no-add-button")
+                    raise RuntimeError(f"Could not find an Add-task control. Screenshot: {shot}")
+            else:
+                await add_btn.click()
+                await page.keyboard.type(name, delay=10)
+                await page.keyboard.press("Enter")
+                await page.wait_for_timeout(1500)
 
-            await add_btn.click()
-            # Type the name into the focused input
-            await page.keyboard.type(name, delay=15)
-            await page.keyboard.press("Enter")
-            await page.wait_for_timeout(1500)
-
+            # Move to bucket via right-click (only meaningful when there's >1 bucket;
+            # for the Backlog default this is a no-op fallback)
             if bucket_name:
-                # Try to drag/drop the new row into the named bucket via right-click menu
                 try:
                     row = page.get_by_role("row", name=name, exact=False).first
                     await row.click(button="right")
@@ -190,12 +193,132 @@ class BrowserPlanner:
                         choice = page.get_by_role("menuitem", name=bucket_name, exact=False)
                         if await choice.count() > 0:
                             await choice.first.click()
-                            await page.wait_for_timeout(800)
+                            await page.wait_for_timeout(500)
+                    # dismiss any open menu
+                    await page.keyboard.press("Escape")
                 except Exception:
-                    # Non-fatal — task is created, just in default bucket
                     pass
 
-            return {"ok": True, "name": name, "bucket": bucket_name}
+            applied: dict = {"name": name, "bucket": bucket_name}
+
+            if description or labels:
+                await self._fill_details(page, name, description=description, labels=labels)
+                if description:
+                    applied["description"] = True
+                if labels:
+                    applied["labels"] = labels
+
+            return {"ok": True, **applied}
+        finally:
+            if own_page:
+                await page.close()
+
+    async def _open_detail_panel(self, page, task_name: str):
+        """Focus the task-name gridcell for `task_name` and press Alt+I."""
+        cell = page.locator(
+            f"div[role='row']:has-text({task_name!r}) "
+            f"[role='gridcell'][aria-label*='Task Name']"
+        ).first
+        await cell.wait_for(timeout=15000)
+        await cell.click()
+        await page.wait_for_timeout(200)
+        await page.keyboard.press("Alt+i")
+        # Wait for panel region
+        await page.locator(
+            f"[role='region'][aria-label*='Task details for {task_name}']"
+        ).first.wait_for(timeout=15000)
+        await page.wait_for_timeout(400)
+
+    async def _fill_details(
+        self,
+        page,
+        task_name: str,
+        *,
+        description: Optional[str] = None,
+        labels: Optional[list] = None,
+    ) -> None:
+        await self._open_detail_panel(page, task_name)
+        try:
+            if description:
+                # contenteditable div: aria-label "Add a note..."
+                note = page.locator(
+                    "[role='textbox'][aria-label*='Add a note'], "
+                    "[contenteditable='true'][aria-label*='Add a note']"
+                ).first
+                try:
+                    await note.wait_for(timeout=10000)
+                except Exception:
+                    shot = await _shot_async(page, f"no-notes-{task_name[:20]}")
+                    raise RuntimeError(
+                        f"Could not find Notes field for {task_name!r}. Screenshot: {shot}"
+                    )
+                await note.click()
+                await page.keyboard.type(description, delay=2)
+
+            if labels:
+                combo = page.locator(
+                    "[role='combobox'][aria-label*='label to apply'], "
+                    "input[aria-label*='Search for label']"
+                ).first
+                for lab in labels:
+                    lab = lab.strip()
+                    if not lab:
+                        continue
+                    await combo.click()
+                    await combo.fill("")
+                    await page.keyboard.type(lab, delay=15)
+                    await page.wait_for_timeout(600)
+                    # Try to pick a matching suggestion (existing label) first
+                    picked = False
+                    for opt_role in ("option", "menuitem"):
+                        opt = page.get_by_role(opt_role, name=lab, exact=False).first
+                        try:
+                            if await opt.count() > 0:
+                                await opt.click(timeout=2000)
+                                picked = True
+                                break
+                        except Exception:
+                            pass
+                    if not picked:
+                        # Create new label by pressing Enter
+                        await page.keyboard.press("Enter")
+                    await page.wait_for_timeout(400)
+        finally:
+            close = page.get_by_role("button", name="Close pane", exact=False)
+            try:
+                if await close.count() > 0:
+                    await close.first.click()
+                    await page.wait_for_timeout(300)
+            except Exception:
+                pass
+
+    async def bulk_create(self, plan_url: str, items: list) -> list:
+        """items: list of dicts with name, bucket_name?, description?, labels?"""
+        page = await self._open_plan(plan_url)
+        results = []
+        try:
+            for it in items:
+                try:
+                    res = await self.create_task(
+                        plan_url,
+                        name=it["name"],
+                        bucket_name=it.get("bucket_name"),
+                        description=it.get("description"),
+                        labels=it.get("labels"),
+                        _page=page,
+                    )
+                    results.append(res)
+                except Exception as e:
+                    shot = await _shot_async(page, f"bulk-fail-{len(results)}")
+                    results.append({"ok": False, "name": it.get("name"),
+                                    "error": str(e), "screenshot": shot})
+                    # Try to close any stuck panel
+                    try:
+                        await page.keyboard.press("Escape")
+                        await page.keyboard.press("Escape")
+                    except Exception:
+                        pass
+            return results
         finally:
             await page.close()
 
