@@ -11,7 +11,7 @@ This skill talks to **Dataverse** (where Planner Premium / Project for the Web p
 
 ```bash
 PLANNER=~/.copilot/bin/planner
-[[ -x "$PLANNER" ]] || { echo "❌ planner skill not installed — run install/install.sh from https://github.com/msft-hub-tlv/planner-skill"; exit 1; }
+[[ -x "$PLANNER" ]] || { echo "❌ planner skill not installed — run install/install.sh from https://github.com/msft-hub-tlv/planner"; exit 1; }
 "$PLANNER" auth --check || "$PLANNER" auth
 ```
 
@@ -49,33 +49,51 @@ Returns an array of `{ id, name, bucket, percentComplete, start, due, assignees,
 
 ### 3. Update a task
 
-For simple fields (name, %complete, priority, notes):
-
 ```bash
-planner update <taskId> --name "..." --percent 75 --priority high --notes "..."
+planner update <taskId> --plan "<plan-url>" --name "..." --percent 75 --due 2026-05-15
 ```
 
-For schedule fields (start, due, effort) — the script automatically routes through the schedule API:
-
-```bash
-planner update <taskId> --start 2026-05-01 --due 2026-05-15 --effort 16h
-```
-
-Always echo the diff back to the user before confirming success.
+For schedule fields (start, due, effort) the script routes through the schedule API. **Always pass `--plan`** so the browser fallback can open the right plan if Dataverse blocks the write (it usually does — see "Writes" below).
 
 ### 4. Complete a task
 
 ```bash
-planner complete <taskId>
+planner complete <taskId> --plan "<plan-url>"
 ```
 
 ### 5. Create a task
 
 ```bash
-planner create --plan <planId> --bucket <bucketId> --name "..." [--assignee user@domain.com]
+planner create --plan "<plan-url>" --name "..." [--bucket-name "Backlog"]
 ```
 
-If no bucketId supplied, list buckets first with `planner buckets <planId>` and ask the user to pick one.
+`--bucket` takes a bucket GUID for the Dataverse path; `--bucket-name` takes the visible label for the browser path. With `--via auto` (default) the skill picks whichever lands in the right place.
+
+## Writes — Dataverse vs. browser
+
+Project for the Web ships a **Dataverse plugin that rejects every direct write** to `msdyn_projecttask` (you'll see *"You cannot directly do 'Update'/'Create' operation"*). The sanctioned `msdyn_PssCreateV1` / `msdyn_PssUpdateV1` route also requires the `prvCreatemsdyn_operationset` privilege which delegated user tokens normally don't have.
+
+So writes drive the **`planner.cloud.microsoft` UI** via Playwright + a persistent Edge profile.
+
+### One-time setup
+
+```bash
+planner browser-login
+```
+
+Opens a visible Edge window with a dedicated profile at `~/.copilot/m-skills/planner/profile`. Sign in with the account that owns the plan, then close the window. The profile persists, so subsequent writes run **headless** with no prompts.
+
+### `--via {auto, api, browser}`
+
+Every write subcommand (`create`, `complete`, `update`) accepts:
+
+- `auto` *(default)* — try Dataverse first, fall back to the browser UI when the plugin block is detected.
+- `api` — force Dataverse (will fail today; useful to retry after an admin grants `prvCreatemsdyn_operationset`).
+- `browser` — skip Dataverse, drive the UI directly. Recommended when you already know the API will fail, or when you only have the task **name** (browser mode looks up tasks by visible label).
+
+Add `--show-browser` to debug — runs Edge with a visible window.
+
+Failure screenshots land in `~/.copilot/m-skills/planner/.cache/screenshots/`.
 
 ## Privacy
 
@@ -87,12 +105,14 @@ Planner data is the user's private work data. The skill is read/write **only aga
 | --- | --- | --- |
 | `401 Unauthorized` from Dataverse | token expired | run `planner auth --refresh` |
 | `403` on a specific plan | user not a member of the plan's container group | ask user to confirm they can open the URL in a browser |
-| `404 msdyn_projects(<id>)` | wrong env URL — user has multiple Dataverse envs | run `planner envs` and ask user which env contains the plan |
-| `msdyn_PssUpdateV1` 400 | invalid date/effort format | dates must be ISO `YYYY-MM-DD`, effort like `8h` or `2d` |
+| `404 msdyn_projects(<id>)` | wrong env URL — multiple Dataverse envs | run `planner envs` and ask user which env contains the plan |
+| `"You cannot directly do…"` | Project-for-the-Web plugin block on writes | expected — `--via auto` will fall back to the browser; if you forced `--via api`, drop the flag |
+| Browser write times out / asks for sign-in | persistent profile not seeded | run `planner browser-login` |
+| Browser can't find the task | task identifier doesn't match a row | pass the exact visible task **name** (case-insensitive substring match) |
 
 ## Repo + version
 
-- Source: https://github.com/msft-hub-tlv/planner-skill
+- Source: https://github.com/msft-hub-tlv/planner
 - Local install: `~/.copilot/m-skills/planner/`
 - Version pinned in `~/.copilot/m-skills/planner/VERSION`
 

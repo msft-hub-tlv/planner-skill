@@ -16,8 +16,9 @@ from typing import Optional
 
 import msal  # type: ignore
 
-# Microsoft Azure PowerShell — public client id, works in every tenant.
-CLIENT_ID = "1950a258-227b-4e31-a9cf-717495945fc2"
+# Azure CLI public client id — broadly allow-listed by Conditional Access in
+# Microsoft corp tenants. Falls back via PLANNER_CLIENT_ID env var if needed.
+CLIENT_ID = os.environ.get("PLANNER_CLIENT_ID", "04b07795-8ddb-461a-bbee-02f9e1bf7b46")
 
 CACHE_DIR = Path(os.environ.get("PLANNER_CACHE_DIR", Path.home() / ".copilot" / "m-skills" / "planner" / ".cache"))
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -72,12 +73,28 @@ def acquire_token(env_url: str, tenant: str = "common", interactive: bool = True
             "no cached token and interactive=False — run `planner auth` to sign in"
         )
 
-    flow = app.initiate_device_flow(scopes=scope)
-    if "user_code" not in flow:
-        raise RuntimeError(f"device flow failed to start: {json.dumps(flow, indent=2)}")
+    # Microsoft corp tenant blocks device-code flow via Conditional Access
+    # (AADSTS53003). Use interactive browser auth — opens local browser and
+    # uses authorization_code + PKCE, which CA permits on compliant devices.
+    # Set PLANNER_FORCE_DEVICE_CODE=1 to force the legacy flow (e.g. for
+    # headless/SSH use in tenants that allow it).
+    if os.environ.get("PLANNER_FORCE_DEVICE_CODE"):
+        flow = app.initiate_device_flow(scopes=scope)
+        if "user_code" not in flow:
+            raise RuntimeError(f"device flow failed to start: {json.dumps(flow, indent=2)}")
+        print(flow["message"], file=sys.stderr, flush=True)
+        result = app.acquire_token_by_device_flow(flow)
+    else:
+        print(
+            "Opening browser to sign in... (set PLANNER_FORCE_DEVICE_CODE=1 to use device-code instead)",
+            file=sys.stderr,
+            flush=True,
+        )
+        result = app.acquire_token_interactive(
+            scopes=scope,
+            prompt="select_account",
+        )
 
-    print(flow["message"], file=sys.stderr, flush=True)
-    result = app.acquire_token_by_device_flow(flow)  # blocks until user completes
     _save_cache(tenant, cache)
 
     if "access_token" not in result:
@@ -88,8 +105,12 @@ def acquire_token(env_url: str, tenant: str = "common", interactive: bool = True
 
 
 def acquire_token_for_bap(tenant: str = "common", interactive: bool = True) -> str:
-    """Token for the Business Application Platform admin API (env discovery)."""
-    return acquire_token("https://api.bap.microsoft.com", tenant, interactive)
+    """Token for Dataverse Global Discovery Service (env enumeration).
+
+    Name kept for backward compat — earlier versions used the BAP admin API,
+    which only returned envs you administer (too narrow for Planner Premium).
+    """
+    return acquire_token("https://globaldisco.crm.dynamics.com", tenant, interactive)
 
 
 def check(tenant: str = "common") -> bool:
@@ -101,7 +122,7 @@ def check(tenant: str = "common") -> bool:
         return False
     # Try a benign scope — any cached refresh token will satisfy this.
     result = app.acquire_token_silent(
-        ["https://api.bap.microsoft.com/.default"], account=accounts[0]
+        ["https://globaldisco.crm.dynamics.com/.default"], account=accounts[0]
     )
     _save_cache(tenant, cache)
     return bool(result and "access_token" in result)

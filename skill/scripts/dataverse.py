@@ -68,28 +68,34 @@ def parse_plan_url(url: str) -> dict:
 
 
 def list_environments(bap_token: str) -> list[Env]:
-    """Enumerate Dataverse environments the signed-in user can reach."""
+    """Enumerate Dataverse environments the signed-in user can reach.
+
+    Uses Global Discovery Service (every Dataverse instance the user has any
+    role in, including hidden ones like the Project for the Web /
+    Planner-Premium default env). The BAP admin endpoint only returns envs
+    you administer — too narrow.
+
+    `bap_token` here is actually a globaldisco-scoped token despite the name
+    (kept for backward compat with the function signature).
+    """
     resp = requests.get(
-        "https://api.bap.microsoft.com/providers/Microsoft.BusinessAppPlatform/scopes/admin/environments",
-        params={"api-version": "2020-10-01", "$expand": "properties"},
-        headers={"Authorization": f"Bearer {bap_token}"},
+        "https://globaldisco.crm.dynamics.com/api/discovery/v2.0/Instances",
+        headers={"Authorization": f"Bearer {bap_token}", "Accept": "application/json"},
         timeout=30,
     )
     resp.raise_for_status()
     out: list[Env] = []
-    for env in resp.json().get("value", []):
-        props = env.get("properties", {}) or {}
-        meta = props.get("linkedEnvironmentMetadata") or {}
-        url = meta.get("instanceApiUrl") or meta.get("instanceUrl")
-        org_id = meta.get("resourceId") or meta.get("instanceId")
+    for inst in resp.json().get("value", []):
+        url = inst.get("ApiUrl") or inst.get("Url")
+        org_id = inst.get("Id")
         if not url or not org_id:
             continue
         out.append(
             Env(
-                name=props.get("displayName") or meta.get("friendlyName") or "<unnamed>",
+                name=inst.get("FriendlyName") or inst.get("UniqueName") or "<unnamed>",
                 url=url.rstrip("/"),
                 org_id=org_id,
-                tenant_id=props.get("tenantId") or "",
+                tenant_id=inst.get("TenantId") or "",
             )
         )
     return out

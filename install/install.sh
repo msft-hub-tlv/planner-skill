@@ -73,6 +73,13 @@ cyan "▶ Creating venv at $SKILL_DIR/.venv"
 "$SKILL_DIR/.venv/bin/python" -m pip install --quiet --upgrade pip
 "$SKILL_DIR/.venv/bin/python" -m pip install --quiet -r "$SKILL_DIR/requirements.txt"
 
+# ── playwright browsers (Edge channel, used by browser-fallback writes) ──
+cyan "▶ Installing Playwright Edge channel"
+if ! "$SKILL_DIR/.venv/bin/python" -m playwright install msedge >/dev/null 2>&1; then
+  yellow "  ⚠ playwright install msedge failed — browser writes won't work until you run:"
+  yellow "    $SKILL_DIR/.venv/bin/python -m playwright install msedge"
+fi
+
 # ── launcher ─────────────────────────────────────────────────────────────
 cyan "▶ Installing launcher → $BIN_DIR/planner"
 mkdir -p "$BIN_DIR"
