@@ -112,18 +112,29 @@ class BrowserPlanner:
     async def _open_plan(self, plan_url: str):
         page = await self._ctx.new_page()
         await page.goto(plan_url, wait_until="domcontentloaded")
-        # Planner shell loads heavy JS — wait until grid rows are visible
+        # Planner shell loads heavy JS. Wait for the actual Add-task control
+        # (or any task row) — the empty role=grid skeleton appears earlier.
+        long_timeout = max(DEFAULT_TIMEOUT_MS, 90_000)
+        candidates = [
+            "button:has-text('Add new task')",
+            "button:has-text('Add task')",
+            "button:has-text('New task')",
+            "button:has-text('הוספת משימה')",
+            "[role='textbox'][aria-label*='Add new task' i]",
+            "[role='textbox'][aria-label*='task name' i]",
+            "[role='gridcell']",
+            "[role='row'][aria-rowindex]",
+        ]
         try:
-            await page.wait_for_selector(
-                "div[role='grid'], div[role='treegrid'], button:has-text('Add task'), button:has-text('הוספת משימה')",
-                timeout=DEFAULT_TIMEOUT_MS,
-            )
+            await page.wait_for_selector(", ".join(candidates), timeout=long_timeout)
         except Exception:
             shot = await _shot_async(page, "open-plan-timeout")
             raise RuntimeError(
                 f"Timed out waiting for Planner grid to load. Screenshot: {shot}. "
                 "If the page asked you to sign in, run `planner browser-login` first."
             )
+        # Give the grid an extra moment to fully hydrate
+        await page.wait_for_timeout(1500)
         return page
 
     async def create_task(

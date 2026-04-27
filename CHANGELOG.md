@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org/).
 
+## [0.2.1] - 2026-04-27
+
+### Fixed
+- **Browser fallback no longer crashes with "cannot reuse already awaited coroutine."** `_run_browser` now accepts a coroutine *factory* (callable) instead of a pre-built coroutine, so the `RuntimeError` retry path can request a fresh coroutine. The previous wrapper masked real Playwright errors by re-raising as a coroutine-reuse error.
+- **Planner grid now waits for actual UI controls before acting.** `_open_plan` previously waited only for an empty `role=grid` skeleton, which appeared seconds before the Add-task button was available, causing "Could not find an Add-task control" failures on slower loads. Wait now targets the Add-task button / inline textbox / first gridcell, with a 90 s ceiling and a brief post-load settle.
+
+### Verified
+- End-to-end create against a Premium plan in tenant 72f988bf (Microsoft corp) successfully created `Dummy task v0.2 test` via the browser fallback after the plugin block. Task confirmed via `planner list`.
+
 ## [0.2.0] - 2026-04-27
 
 ### Added

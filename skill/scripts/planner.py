@@ -39,14 +39,14 @@ def _is_plugin_block(exc: Exception) -> bool:
     return any(m in msg for m in PLUGIN_BLOCK_MARKERS)
 
 
-def _run_browser(coro):
+def _run_browser(coro_factory):
     import asyncio
     try:
-        return asyncio.run(coro)
+        return asyncio.run(coro_factory())
     except RuntimeError:
         loop = asyncio.new_event_loop()
         try:
-            return loop.run_until_complete(coro)
+            return loop.run_until_complete(coro_factory())
         finally:
             loop.close()
 
@@ -275,7 +275,7 @@ def cmd_update(args: argparse.Namespace) -> int:
                 name=name, percent=percent, start=start, due=due,
             )
 
-    out = _run_browser(_run())
+    out = _run_browser(_run)
     print(json.dumps({**out, "via": "browser"}, indent=2))
     return 0
 
@@ -305,7 +305,7 @@ def cmd_complete(args: argparse.Namespace) -> int:
         async with BrowserPlanner(headless=not args.show_browser) as bp:
             return await bp.complete_task(args.plan, args.task)
 
-    out = _run_browser(_run())
+    out = _run_browser(_run)
     print(json.dumps({**out, "via": "browser"}, indent=2))
     return 0
 
@@ -337,7 +337,7 @@ def cmd_create(args: argparse.Namespace) -> int:
         async with BrowserPlanner(headless=not args.show_browser) as bp:
             return await bp.create_task(args.plan, args.name, bucket_name=args.bucket_name)
 
-    out = _run_browser(_run())
+    out = _run_browser(_run)
     print(json.dumps({**out, "via": "browser"}, indent=2))
     return 0
 
@@ -352,7 +352,7 @@ def cmd_browser_login(args: argparse.Namespace) -> int:
         async with BrowserPlanner(headless=False, slow_mo_ms=20) as bp:
             await bp.login()
 
-    _run_browser(_run())
+    _run_browser(_run)
     print("✅ profile seeded — future writes will run headless.")
     return 0
 
