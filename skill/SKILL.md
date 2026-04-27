@@ -11,7 +11,7 @@ This skill talks to **Dataverse** (where Planner Premium / Project for the Web p
 
 ```bash
 PLANNER=~/.copilot/bin/planner
-[[ -x "$PLANNER" ]] || { echo "❌ planner skill not installed — run install/install.sh from https://github.com/msft-hub-tlv/planner"; exit 1; }
+[[ -x "$PLANNER" ]] || { echo "❌ planner skill not installed — run install/install.sh from https://github.com/msft-hub-tlv/planner-skill"; exit 1; }
 "$PLANNER" auth --check || "$PLANNER" auth
 ```
 
@@ -92,7 +92,7 @@ Planner data is the user's private work data. The skill is read/write **only aga
 
 ## Repo + version
 
-- Source: https://github.com/msft-hub-tlv/planner
+- Source: https://github.com/msft-hub-tlv/planner-skill
 - Local install: `~/.copilot/m-skills/planner/`
 - Version pinned in `~/.copilot/m-skills/planner/VERSION`
 

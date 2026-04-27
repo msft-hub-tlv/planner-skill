@@ -32,7 +32,7 @@ All commands accept the full Planner Premium URL in place of a plan id.
 ## Install
 
 ```bash
-git clone https://github.com/msft-hub-tlv/planner.git
+git clone https://github.com/msft-hub-tlv/planner-skill.git
 cd planner
 ./install/install.sh
 ```
@@ -40,7 +40,7 @@ cd planner
 Windows:
 
 ```powershell
-git clone https://github.com/msft-hub-tlv/planner.git
+git clone https://github.com/msft-hub-tlv/planner-skill.git
 cd planner
 ./install/install.ps1
 ```
