@@ -1,5 +1,12 @@
 # planner
 
+> ⚠️ **DEPRECATED — moved to hub-skills monorepo.**
+> See [DEPRECATED.md](DEPRECATED.md). New home:
+> **https://github.com/msft-hub-tlv/hub-skills/tree/main/skills/planner**
+> Install: `git clone msft-hub-tlv/hub-skills && bash install/install.sh --only planner`
+
+---
+
 > **Read & update Microsoft Planner Premium plans from Clawpilot.** Talks to Dataverse (where premium plans live) via the Project schedule APIs — works for any Planner Premium / Project for the Web plan you can open in `planner.cloud.microsoft`.
 
 [![Status: alpha](https://img.shields.io/badge/status-alpha-orange.svg)]() [![Version](https://img.shields.io/badge/version-0.1.0-blue.svg)](./VERSION) [![License: Internal](https://img.shields.io/badge/license-internal-lightgrey.svg)]()
